@@ -130,7 +130,7 @@ async fn run(matches: &ArgMatches<'_>) -> Result<()> {
                 parameters.gc_depth,
                 /* rx_primary */ rx_new_certificates,
                 /* tx_primary */ tx_feedback,
-                tx_output,
+                tx_output, // This channel sends certificates to the Engine
             );
 
             process(

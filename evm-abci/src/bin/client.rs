@@ -3,19 +3,25 @@ use evm_abci::types::{Query, QueryResponse};
 use eyre::Result;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use yansi::{Paint};
+use yansi::Paint;
 
-static ALICE: Lazy<Address> = Lazy::new(||{
-    "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".parse::<Address>().unwrap()
+static ALICE: Lazy<Address> = Lazy::new(|| {
+    "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        .parse::<Address>()
+        .unwrap()
 });
-static BOB: Lazy<Address> = Lazy::new(||{
-    "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".parse::<Address>().unwrap()
+static BOB: Lazy<Address> = Lazy::new(|| {
+    "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+        .parse::<Address>()
+        .unwrap()
 });
-static CHARLIE: Lazy<Address> = Lazy::new(||{
-    "0xCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC".parse::<Address>().unwrap()
+static CHARLIE: Lazy<Address> = Lazy::new(|| {
+    "0xCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+        .parse::<Address>()
+        .unwrap()
 });
 
-static ADDRESS_TO_NAME: Lazy<HashMap<Address, &'static str>> = Lazy::new(||{
+static ADDRESS_TO_NAME: Lazy<HashMap<Address, &'static str>> = Lazy::new(|| {
     let mut address_to_name = HashMap::new();
     address_to_name.insert(*ALICE, "Alice");
     address_to_name.insert(*BOB, "Bob");
@@ -23,7 +29,6 @@ static ADDRESS_TO_NAME: Lazy<HashMap<Address, &'static str>> = Lazy::new(||{
 
     address_to_name
 });
-
 
 fn get_readable_eth_value(value: U256) -> Result<f64> {
     let value_string = ethers::utils::format_units(value, "ether")?;
@@ -49,7 +54,7 @@ async fn query_balance(host: &str, address: Address) -> Result<()> {
     println!(
         "{}'s balance: {}",
         Paint::new(name).bold(),
-        Paint::green(format!("{} ETH", readable_value)).bold()
+        Paint::green(&format!("{} ETH", &readable_value)).bold()
     );
     Ok(())
 }
@@ -100,9 +105,9 @@ async fn send_transaction(host: &str, from: Address, to: Address, value: U256) -
 #[tokio::main]
 async fn main() -> Result<()> {
     // the ABCI port on the various narwhal primaries
-    let host_1 = "http://127.0.0.1:3002";
-    let host_2 = "http://127.0.0.1:3009";
-    let host_3 = "http://127.0.0.1:3016";
+    let host_1 = "http://213.136.78.134:3002";
+    let host_2 = "http://213.136.78.134:3009";
+    let host_3 = "http://213.136.78.134:3016";
 
     let value = ethers::utils::parse_units(1, 18)?;
 
@@ -115,7 +120,7 @@ async fn main() -> Result<()> {
     println!(
         "{} sends {} transactions:",
         Paint::new("Alice").bold(),
-        Paint::red(format!("conflicting")).bold()
+        Paint::red("conflicting").bold()
     );
     send_transaction(host_2, *ALICE, *BOB, value).await?;
     send_transaction(host_3, *ALICE, *CHARLIE, value).await?;
