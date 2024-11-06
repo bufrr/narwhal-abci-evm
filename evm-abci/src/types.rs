@@ -1,4 +1,3 @@
-use ethers::prelude::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -11,12 +10,19 @@ use abci::{
     types::*,
 };
 
+use alloy::primitives::{Address, Bytes, U256};
+use alloy::rpc::types::TransactionRequest;
+use foundry_common::ens::NameOrAddress;
 use foundry_evm::revm::{
     self,
     db::{CacheDB, EmptyDB},
-    CreateScheme, Database, DatabaseCommit, Env, Log as RevmLog, Return, TransactOut, TransactTo,
-    TxEnv,
+    primitives::{AccountInfo, CreateScheme, Env, TransactTo, TxEnv},
+    Database, DatabaseCommit,
 };
+use revm::primitives::{ExecutionResult, Output};
+use revm::EvmBuilder;
+use std::error::Error as StdError;
+use foundry_evm::revm::primitives::ResultAndState;
 
 /// The app's state, containing a Revm DB.
 // TODO: Should we instead try to replace this with Anvil and implement traits for it?
@@ -33,7 +39,7 @@ impl Default for State<CacheDB<EmptyDB>> {
         Self {
             block_height: 0,
             app_hash: Vec::new(),
-            db: CacheDB::new(EmptyDB()),
+            db: CacheDB::new(EmptyDB::default()),
             env: Default::default(),
         }
     }
@@ -41,50 +47,63 @@ impl Default for State<CacheDB<EmptyDB>> {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct TransactionResult {
-    transaction: TransactionRequest,
-    exit: Return,
-    out: TransactOut,
-    gas: u64,
-    logs: Vec<RevmLog>,
+    pub out: ExecutionResult,
+    pub gas: u64,
+    pub logs: Vec<revm::primitives::Log>,
 }
 
-impl<Db: Database + DatabaseCommit> State<Db> {
+impl<Db: Database + DatabaseCommit> State<Db>
+where
+    Db::Error: StdError + Send + Sync + 'static,
+{
     async fn execute(
         &mut self,
         tx: TransactionRequest,
         read_only: bool,
     ) -> eyre::Result<TransactionResult> {
-        let mut evm = revm::EVM::new();
-        evm.env = self.env.clone();
-        evm.env.tx = TxEnv {
-            caller: tx.from.unwrap_or_default(),
-            transact_to: match tx.to {
-                Some(NameOrAddress::Address(inner)) => TransactTo::Call(inner),
-                Some(NameOrAddress::Name(_)) => panic!("not allowed"),
-                None => TransactTo::Create(CreateScheme::Create),
-            },
-            data: tx.data.clone().unwrap_or_default().0,
-            chain_id: Some(self.env.cfg.chain_id.as_u64()),
-            nonce: Some(tx.nonce.unwrap_or_default().as_u64()),
-            value: tx.value.unwrap_or_default(),
-            gas_price: tx.gas_price.unwrap_or_default(),
-            gas_priority_fee: Some(tx.gas_price.unwrap_or_default()),
-            gas_limit: tx.gas.unwrap_or_default().as_u64(),
-            access_list: vec![],
-        };
-        evm.database(&mut self.db);
+        let mut result: ResultAndState;
+        {
+            // Create a new database reference
+            let db = &mut self.db;
 
-        let (ret, out, gas, state, logs) = evm.transact();
+            // Build new EVM instance using EvmBuilder
+            let mut evm = EvmBuilder::default()
+                .with_db(&mut *db)
+                .with_env(Box::from(self.env.clone()))
+                .build();
+
+            // Configure transaction environment
+            evm.context.evm.env.tx = TxEnv {
+                caller: tx.from.unwrap_or_default(),
+                transact_to: tx.to.unwrap_or_else(|| TransactTo::Create),
+                value: tx.value.unwrap_or_default(),
+                data: tx.input.data.clone().unwrap_or_default(),
+                gas_limit: tx.gas.unwrap_or(21000),
+                gas_price: U256::from(tx.gas_price.unwrap_or_default()),
+                gas_priority_fee: Some(U256::from(tx.max_priority_fee_per_gas.unwrap_or_default())),
+                blob_hashes: vec![],
+                max_fee_per_blob_gas: None,
+                authorization_list: None,
+                nonce: Some(tx.nonce.unwrap_or_default()),
+                chain_id: Some(self.env.cfg.chain_id),
+                access_list: vec![],
+                optimism: Default::default(),
+            };
+
+            // Execute transaction
+            result = evm.transact()?;
+        }
+
+        // Commit state changes if not read-only
         if !read_only {
-            self.db.commit(state);
-        };
+            self.db.commit(result.state.clone());
+        }
 
+        let rc = result.clone();
         Ok(TransactionResult {
-            transaction: tx,
-            exit: ret,
-            gas,
-            logs,
-            out,
+            out: rc.result.clone(),
+            gas: rc.result.gas_used(),
+            logs: rc.result.logs().into(),
         })
     }
 }
@@ -107,7 +126,10 @@ impl<Db: Clone> Consensus<Db> {
 }
 
 #[async_trait]
-impl<Db: Clone + Send + Sync + DatabaseCommit + Database> ConsensusTrait for Consensus<Db> {
+impl<Db: Clone + Send + Sync + DatabaseCommit + Database> ConsensusTrait for Consensus<Db>
+where
+    Db::Error: StdError + Send + Sync + 'static,
+{
     #[tracing::instrument(skip(self))]
     async fn init_chain(&self, _init_chain_request: RequestInitChain) -> ResponseInitChain {
         ResponseInitChain::default()
@@ -134,14 +156,16 @@ impl<Db: Clone + Send + Sync + DatabaseCommit + Database> ConsensusTrait for Con
             }
         };
 
-        // resolve the `to`
-        match tx.to {
-            Some(NameOrAddress::Address(addr)) => tx.to = Some(addr.into()),
-            _ => panic!("not an address"),
+        let result = match state.execute(tx, false).await {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::error!("execution failed: {}", e);
+                return ResponseDeliverTx {
+                    data: format!("execution failed: {}", e).into(),
+                    ..Default::default()
+                };
+            }
         };
-
-        let result = state.execute(tx, false).await.unwrap();
-        tracing::trace!("executed tx");
 
         ResponseDeliverTx {
             data: serde_json::to_vec(&result).unwrap(),
@@ -221,38 +245,49 @@ impl QueryResponse {
 }
 
 #[async_trait]
-impl<Db: Send + Sync + Database + DatabaseCommit> InfoTrait for Info<Db> {
+impl<Db: Send + Sync + Database + DatabaseCommit> InfoTrait for Info<Db>
+where
+    Db::Error: StdError + Send + Sync + 'static,
+{
     // replicate the eth_call interface
     async fn query(&self, query_request: RequestQuery) -> ResponseQuery {
         let mut state = self.state.lock().await;
 
         let query: Query = match serde_json::from_slice(&query_request.data) {
-            Ok(tx) => tx,
-            // no-op just logger
+            Ok(q) => q,
             Err(_) => {
                 return ResponseQuery {
                     value: "could not decode request".into(),
                     ..Default::default()
-                };
+                }
             }
         };
 
         let res = match query {
+            Query::Balance(address) => match state.db.basic(address) {
+                Ok(Some(account)) => QueryResponse::Balance(account.balance),
+                Ok(None) => QueryResponse::Balance(U256::ZERO),
+                Err(_) => {
+                    return ResponseQuery {
+                        value: "database error".into(),
+                        ..Default::default()
+                    }
+                }
+            },
             Query::EthCall(mut tx) => {
                 match tx.to {
-                    Some(NameOrAddress::Address(addr)) => tx.to = Some(addr.into()),
+                    Some(addr) => tx.to = Some(addr.into()),
                     _ => panic!("not an address"),
                 };
 
                 let result = state.execute(tx, true).await.unwrap();
                 QueryResponse::Tx(result)
             }
-            Query::Balance(address) => QueryResponse::Balance(state.db.basic(address).balance),
         };
 
         ResponseQuery {
             key: query_request.data,
-            value: serde_json::to_vec(&res).unwrap(),
+            value: serde_json::to_vec(&res).unwrap_or_default(),
             ..Default::default()
         }
     }
@@ -278,11 +313,13 @@ impl SnapshotTrait for Snapshot {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::network::TransactionBuilder;
+    use alloy::primitives::utils::parse_units;
     // use ethers::prelude::*;
 
     #[tokio::test]
     async fn run_and_query_tx() {
-        let val = ethers::utils::parse_units(1, 18).unwrap();
+        let val = parse_units("1", 18).unwrap();
         let alice = Address::random();
         let bob = Address::random();
 
@@ -291,20 +328,20 @@ mod tests {
         // give alice some money
         state.db.insert_account_info(
             alice,
-            revm::AccountInfo {
-                balance: val,
+            AccountInfo {
+                balance: val.into(),
                 ..Default::default()
             },
         );
 
         // make the tx
-        let tx = TransactionRequest::new()
+        let mut tx = TransactionRequest::default()
             .from(alice)
             .to(bob)
-            .gas_price(0)
-            .data(vec![1, 2, 3, 4, 5])
-            .gas(31000)
-            .value(val);
+            .input(vec![1, 2, 3, 4, 5].into())
+            .value(val.into());
+        tx.set_gas_price(0);
+        tx.set_gas_limit(21000);
 
         // Send it over an ABCI message
 
@@ -316,7 +353,18 @@ mod tests {
         let res = consensus.deliver_tx(req).await;
         let res: TransactionResult = serde_json::from_slice(&res.data).unwrap();
         // tx passed
-        assert_eq!(res.exit, Return::Stop);
+
+        match res.out {
+            ExecutionResult::Success { reason, .. } => {
+                assert_eq!(reason, revm::primitives::SuccessReason::Stop);
+            }
+            ExecutionResult::Revert { .. } => {
+                panic!("Transaction reverted");
+            }
+            ExecutionResult::Halt { .. } => {
+                panic!("Transaction halted");
+            }
+        }
 
         // now we query the state for bob's balance
         let info = Info {
@@ -330,6 +378,6 @@ mod tests {
             .await;
         let res: QueryResponse = serde_json::from_slice(&res.value).unwrap();
         let balance = res.as_balance();
-        assert_eq!(balance, val);
+        assert_eq!(balance, val.into());
     }
 }

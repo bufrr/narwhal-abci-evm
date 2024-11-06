@@ -1,4 +1,8 @@
-use ethers::prelude::*;
+use alloy::primitives::{
+    utils::{format_units, parse_units},
+    Address, U256,
+};
+use alloy::rpc::types::TransactionRequest;
 use evm_abci::types::{Query, QueryResponse};
 use eyre::Result;
 use once_cell::sync::Lazy;
@@ -31,7 +35,7 @@ static ADDRESS_TO_NAME: Lazy<HashMap<Address, &'static str>> = Lazy::new(|| {
 });
 
 fn get_readable_eth_value(value: U256) -> Result<f64> {
-    let value_string = ethers::utils::format_units(value, "ether")?;
+    let value_string = format_units(value, "ether")?;
     Ok(value_string.parse::<f64>()?)
 }
 
@@ -60,10 +64,7 @@ async fn query_balance(host: &str, address: Address) -> Result<()> {
 }
 
 async fn query_all_balances(host: &str) -> Result<()> {
-    println!(
-        "Querying balances from {}:",
-        Paint::new(format!("{}", host)).bold()
-    );
+    println!("Querying balances from {}:", Paint::new(host).bold());
 
     query_balance(host, *ALICE).await?;
     query_balance(host, *BOB).await?;
@@ -80,15 +81,14 @@ async fn send_transaction(host: &str, from: Address, to: Address, value: U256) -
         "{} sends TX to {} transferring {} to {}...",
         Paint::new(from_name).bold(),
         Paint::red(host).bold(),
-        Paint::new(format!("{} ETH", readable_value)).bold(),
+        Paint::new(&format!("{} ETH", readable_value)).bold(),
         Paint::red(to_name).bold()
     );
 
-    let tx = TransactionRequest::new()
+    let tx = TransactionRequest::default()
         .from(from)
         .to(to)
-        .value(value)
-        .gas(21000);
+        .value(value);
 
     let tx = serde_json::to_string(&tx)?;
 
@@ -109,7 +109,7 @@ async fn main() -> Result<()> {
     let host_2 = "http://213.136.78.134:3009";
     let host_3 = "http://213.136.78.134:3016";
 
-    let value = ethers::utils::parse_units(1, 18)?;
+    let value = parse_units("1", "ether")?;
 
     // Query initial balances from host_1
     query_all_balances(host_1).await?;
@@ -122,8 +122,8 @@ async fn main() -> Result<()> {
         Paint::new("Alice").bold(),
         Paint::red("conflicting").bold()
     );
-    send_transaction(host_2, *ALICE, *BOB, value).await?;
-    send_transaction(host_3, *ALICE, *CHARLIE, value).await?;
+    send_transaction(host_2, *ALICE, *BOB, value.into()).await?;
+    send_transaction(host_3, *ALICE, *CHARLIE, value.into()).await?;
 
     println!("---");
 

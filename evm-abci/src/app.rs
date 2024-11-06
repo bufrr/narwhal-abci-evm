@@ -1,9 +1,10 @@
 use crate::{Consensus, Info, Mempool, Snapshot, State};
 use foundry_evm::revm::{
     db::{CacheDB, EmptyDB},
-    AccountInfo,
+    primitives::AccountInfo,
 };
 use std::sync::Arc;
+use foundry_evm::revm::primitives::alloy_primitives::utils::parse_ether;
 use tokio::sync::Mutex;
 
 pub struct App<Db> {
@@ -22,7 +23,7 @@ impl Default for App<CacheDB<EmptyDB>> {
 impl App<CacheDB<EmptyDB>> {
     pub fn new(demo: bool) -> Self {
         let mut state = State {
-            db: CacheDB::new(EmptyDB()),
+            db: CacheDB::new(EmptyDB::default()),
             block_height: Default::default(),
             app_hash: Default::default(),
             env: Default::default(),
@@ -35,7 +36,7 @@ impl App<CacheDB<EmptyDB>> {
                     .parse()
                     .unwrap(),
                 AccountInfo {
-                    balance: ethers::utils::parse_ether(1.5).unwrap(),
+                    balance: parse_ether("1.5").unwrap(),
                     ..Default::default()
                 },
             );
