@@ -10,13 +10,13 @@ use abci::{
     types::*,
 };
 
-use alloy::primitives::{Address, Bytes, U256};
+use alloy::primitives::{Address, Bytes, TxKind, U256};
 use alloy::rpc::types::TransactionRequest;
 use foundry_common::ens::NameOrAddress;
 use foundry_evm::revm::{
     self,
     db::{CacheDB, EmptyDB},
-    primitives::{AccountInfo, CreateScheme, Env, TransactTo, TxEnv},
+    primitives::{AccountInfo, CreateScheme, Env, TxEnv},
     Database, DatabaseCommit,
 };
 use revm::primitives::{ExecutionResult, Output};
@@ -61,7 +61,7 @@ where
         tx: TransactionRequest,
         read_only: bool,
     ) -> eyre::Result<TransactionResult> {
-        let mut result: ResultAndState;
+        let result: ResultAndState;
         {
             // Create a new database reference
             let db = &mut self.db;
@@ -75,7 +75,7 @@ where
             // Configure transaction environment
             evm.context.evm.env.tx = TxEnv {
                 caller: tx.from.unwrap_or_default(),
-                transact_to: tx.to.unwrap_or_else(|| TransactTo::Create),
+                transact_to: tx.to.unwrap_or_else(|| TxKind::Create),
                 value: tx.value.unwrap_or_default(),
                 data: tx.input.data.clone().unwrap_or_default(),
                 gas_limit: tx.gas.unwrap_or(21000),
@@ -145,7 +145,7 @@ where
         tracing::trace!("delivering tx");
         let mut state = self.current_state.lock().await;
 
-        let mut tx: TransactionRequest = match serde_json::from_slice(&deliver_tx_request.tx) {
+        let tx: TransactionRequest = match serde_json::from_slice(&deliver_tx_request.tx) {
             Ok(tx) => tx,
             Err(_) => {
                 tracing::error!("could not decode request");
@@ -249,6 +249,18 @@ impl<Db: Send + Sync + Database + DatabaseCommit> InfoTrait for Info<Db>
 where
     Db::Error: StdError + Send + Sync + 'static,
 {
+    async fn info(&self, _info_request: RequestInfo) -> ResponseInfo {
+        let state = self.state.lock().await;
+
+        ResponseInfo {
+            data: Default::default(),
+            version: Default::default(),
+            app_version: Default::default(),
+            last_block_height: (*state).block_height,
+            last_block_app_hash: (*state).app_hash.clone(),
+        }
+    }
+
     // replicate the eth_call interface
     async fn query(&self, query_request: RequestQuery) -> ResponseQuery {
         let mut state = self.state.lock().await;
@@ -289,18 +301,6 @@ where
             key: query_request.data,
             value: serde_json::to_vec(&res).unwrap_or_default(),
             ..Default::default()
-        }
-    }
-
-    async fn info(&self, _info_request: RequestInfo) -> ResponseInfo {
-        let state = self.state.lock().await;
-
-        ResponseInfo {
-            data: Default::default(),
-            version: Default::default(),
-            app_version: Default::default(),
-            last_block_height: (*state).block_height,
-            last_block_app_hash: (*state).app_hash.clone(),
         }
     }
 }
