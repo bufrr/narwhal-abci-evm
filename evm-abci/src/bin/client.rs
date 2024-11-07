@@ -1,13 +1,23 @@
 use alloy::primitives::{
     utils::{format_units, parse_units},
-    Address, U256,
+    Address,
 };
-use alloy::rpc::types::TransactionRequest;
 use evm_abci::types::{Query, QueryResponse};
 use eyre::Result;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use yansi::Paint;
+use alloy::{
+    network::{TransactionBuilder, EthereumWallet},
+    primitives::U256,
+    providers::{Provider, ProviderBuilder, WalletProvider},
+    rpc::types::TransactionRequest,
+};
+use alloy::network::{Ethereum, NetworkWallet};
+use alloy::transports::http::reqwest::Url;
+use alloy_primitives::address;
+use alloy_signer::Signer;
+use alloy_signer_local::{MnemonicBuilder, coins_bip39::English};
 
 static ALICE: Lazy<Address> = Lazy::new(|| {
     "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -74,21 +84,37 @@ async fn query_all_balances(host: &str) -> Result<()> {
 }
 
 async fn send_transaction(host: &str, from: Address, to: Address, value: U256) -> Result<()> {
-    let from_name = ADDRESS_TO_NAME.get(&from).unwrap();
-    let to_name = ADDRESS_TO_NAME.get(&to).unwrap();
-    let readable_value = get_readable_eth_value(value)?;
-    println!(
-        "{} sends TX to {} transferring {} to {}...",
-        Paint::new(from_name).bold(),
-        Paint::red(host).bold(),
-        Paint::new(&format!("{} ETH", readable_value)).bold(),
-        Paint::red(to_name).bold()
-    );
+    let mut signer = MnemonicBuilder::<English>::default()
+        .phrase("test test test test test test test test test test test junk")
+        .build()?;
 
+    signer.set_chain_id(Some(1337));
+
+
+    let wallet = EthereumWallet::from(signer.clone());
+    let alice = signer.address();
+    println!("Alice's address: {}", alice);
+
+    let provider = ProviderBuilder::new()
+        .with_recommended_fillers()
+        .on_http("http://213.136.78.134:8545".parse()?);
+
+    // Create two users, Alice and Bob.
+    //let alice = wallet.address().clone();
+    let bob = address!("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+    let nonce = provider.get_transaction_count(alice).await?;
+
+    // Build a transaction to send 100 wei from Alice to Bob.
+    // The `from` field is automatically filled to the first signer's address (Alice).
     let tx = TransactionRequest::default()
-        .from(from)
-        .to(to)
-        .value(value);
+        .with_to(bob)
+        .with_nonce(nonce)
+        .with_chain_id(1337)
+        .with_value(U256::from(100))
+        .with_gas_limit(21_000)
+        .with_max_priority_fee_per_gas(1_000_000_000)
+        .with_max_fee_per_gas(20_000_000_000);
+
 
     let tx = serde_json::to_string(&tx)?;
 
@@ -123,7 +149,7 @@ async fn main() -> Result<()> {
         Paint::red("conflicting").bold()
     );
     send_transaction(host_2, *ALICE, *BOB, value.into()).await?;
-    send_transaction(host_3, *ALICE, *CHARLIE, value.into()).await?;
+    //send_transaction(host_3, *ALICE, *CHARLIE, value.into()).await?;
 
     println!("---");
 
@@ -131,15 +157,15 @@ async fn main() -> Result<()> {
     // Takes ~5 seconds to actually apply the state transition?
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-    println!("---");
-
-    // Query final balances from host_2
-    query_all_balances(host_2).await?;
-
-    println!("---");
-
-    // Query final balances from host_3
-    query_all_balances(host_3).await?;
+    // println!("---");
+    // 
+    // // Query final balances from host_2
+    // query_all_balances(host_2).await?;
+    // 
+    // println!("---");
+    // 
+    // // Query final balances from host_3
+    // query_all_balances(host_3).await?;
 
     Ok(())
 }

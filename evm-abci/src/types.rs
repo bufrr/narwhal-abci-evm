@@ -22,6 +22,11 @@ use foundry_evm::revm::{
 use revm::primitives::{ExecutionResult, Output};
 use revm::EvmBuilder;
 use std::error::Error as StdError;
+use alloy::network::{EthereumWallet, TransactionBuilder};
+use alloy::providers::{Provider, ProviderBuilder};
+use alloy_signer::Signer;
+use alloy_signer_local::coins_bip39::English;
+use alloy_signer_local::MnemonicBuilder;
 use foundry_evm::revm::primitives::ResultAndState;
 
 /// The app's state, containing a Revm DB.
@@ -156,19 +161,39 @@ where
             }
         };
 
-        let result = match state.execute(tx, false).await {
-            Ok(result) => result,
-            Err(e) => {
-                tracing::error!("execution failed: {}", e);
-                return ResponseDeliverTx {
-                    data: format!("execution failed: {}", e).into(),
-                    ..Default::default()
-                };
-            }
-        };
+        // let result = match state.execute(tx, false).await {
+        //     Ok(result) => result,
+        //     Err(e) => {
+        //         tracing::error!("execution failed: {}", e);
+        //         return ResponseDeliverTx {
+        //             data: format!("execution failed: {}", e).into(),
+        //             ..Default::default()
+        //         };
+        //     }
+        // };
 
+        let provider = ProviderBuilder::new()
+            .with_recommended_fillers()
+            .on_http("http://213.136.78.134:8545".parse().unwrap());
+
+        let mut signer = MnemonicBuilder::<English>::default()
+            .phrase("test test test test test test test test test test test junk")
+            .build().unwrap();
+
+        signer.set_chain_id(Some(1337));
+
+
+        let wallet = EthereumWallet::from(signer.clone());
+
+        let tx_envelope = tx.build(&wallet).await.unwrap();
+
+        let receipt = provider.send_tx_envelope(tx_envelope)
+            .await.unwrap().get_receipt().await.unwrap();
+
+
+        println!("transaction hash: {:?}", receipt.transaction_hash);
         ResponseDeliverTx {
-            data: serde_json::to_vec(&result).unwrap(),
+            data: serde_json::to_vec(&receipt.transaction_hash).unwrap(),
             ..Default::default()
         }
     }
