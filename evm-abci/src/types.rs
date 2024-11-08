@@ -1,3 +1,4 @@
+use once_cell::sync::Lazy;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -10,9 +11,15 @@ use abci::{
     types::*,
 };
 
+use alloy::network::{EthereumWallet, TransactionBuilder};
 use alloy::primitives::{Address, Bytes, TxKind, U256};
+use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
+use alloy_signer::Signer;
+use alloy_signer_local::coins_bip39::English;
+use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
 use foundry_common::ens::NameOrAddress;
+use foundry_evm::revm::primitives::ResultAndState;
 use foundry_evm::revm::{
     self,
     db::{CacheDB, EmptyDB},
@@ -22,12 +29,7 @@ use foundry_evm::revm::{
 use revm::primitives::{ExecutionResult, Output};
 use revm::EvmBuilder;
 use std::error::Error as StdError;
-use alloy::network::{EthereumWallet, TransactionBuilder};
-use alloy::providers::{Provider, ProviderBuilder};
-use alloy_signer::Signer;
-use alloy_signer_local::coins_bip39::English;
-use alloy_signer_local::MnemonicBuilder;
-use foundry_evm::revm::primitives::ResultAndState;
+use alloy::transports::http::Http;
 
 /// The app's state, containing a Revm DB.
 // TODO: Should we instead try to replace this with Anvil and implement traits for it?
@@ -116,17 +118,26 @@ where
 pub struct Consensus<Db> {
     pub committed_state: Arc<Mutex<State<Db>>>,
     pub current_state: Arc<Mutex<State<Db>>>,
+    pub signer: PrivateKeySigner,
 }
 
 impl<Db: Clone> Consensus<Db> {
-    pub fn new(state: State<Db>) -> Self {
+    pub fn new(state: State<Db>) -> eyre::Result<Self> {
         let committed_state = Arc::new(Mutex::new(state.clone()));
         let current_state = Arc::new(Mutex::new(state));
 
-        Consensus {
+        let mut signer = MnemonicBuilder::<English>::default()
+            .phrase("test test test test test test test test test test test junk")
+            .build()
+            .map_err(|e| eyre::eyre!("Failed to build signer: {}", e))?;
+
+        signer.set_chain_id(Some(1337));
+
+        Ok(Consensus {
             committed_state,
             current_state,
-        }
+            signer,
+        })
     }
 }
 
@@ -147,8 +158,7 @@ where
 
     #[tracing::instrument(skip(self))]
     async fn deliver_tx(&self, deliver_tx_request: RequestDeliverTx) -> ResponseDeliverTx {
-        tracing::trace!("delivering tx");
-        let mut state = self.current_state.lock().await;
+        println!("delivering tx");
 
         let tx: TransactionRequest = match serde_json::from_slice(&deliver_tx_request.tx) {
             Ok(tx) => tx,
@@ -161,39 +171,40 @@ where
             }
         };
 
-        // let result = match state.execute(tx, false).await {
-        //     Ok(result) => result,
-        //     Err(e) => {
-        //         tracing::error!("execution failed: {}", e);
-        //         return ResponseDeliverTx {
-        //             data: format!("execution failed: {}", e).into(),
-        //             ..Default::default()
-        //         };
-        //     }
-        // };
+        let wallet = EthereumWallet::from(self.signer.clone());
 
-        let provider = ProviderBuilder::new()
-            .with_recommended_fillers()
-            .on_http("http://213.136.78.134:8545".parse().unwrap());
+        let tx_envelope = match tx.build(&wallet).await {
+            Ok(envelope) => envelope,
+            Err(e) => {
+                return ResponseDeliverTx {
+                    data: format!("failed to build transaction: {}", e).into(),
+                    ..Default::default()
+                }
+            }
+        };
 
-        let mut signer = MnemonicBuilder::<English>::default()
-            .phrase("test test test test test test test test test test test junk")
-            .build().unwrap();
-
-        signer.set_chain_id(Some(1337));
-
-
-        let wallet = EthereumWallet::from(signer.clone());
-
-        let tx_envelope = tx.build(&wallet).await.unwrap();
-
-        let receipt = provider.send_tx_envelope(tx_envelope)
-            .await.unwrap().get_receipt().await.unwrap();
-
+        let receipt = match PROVIDER.send_tx_envelope(tx_envelope).await {
+            Ok(pending) => match pending.get_receipt().await {
+                Ok(receipt) => receipt,
+                Err(e) => {
+                    return ResponseDeliverTx {
+                        data: format!("failed to get transaction receipt: {}", e).into(),
+                        ..Default::default()
+                    }
+                }
+            },
+            Err(e) => {
+                return ResponseDeliverTx {
+                    data: format!("failed to send transaction: {}", e).into(),
+                    ..Default::default()
+                }
+            }
+        };
 
         println!("transaction hash: {:?}", receipt.transaction_hash);
         ResponseDeliverTx {
-            data: serde_json::to_vec(&receipt.transaction_hash).unwrap(),
+            data: serde_json::to_vec(&receipt.transaction_hash)
+                .unwrap_or_else(|_| b"failed to serialize transaction hash".to_vec()),
             ..Default::default()
         }
     }
@@ -335,74 +346,14 @@ pub struct Snapshot;
 
 impl SnapshotTrait for Snapshot {}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloy::network::TransactionBuilder;
-    use alloy::primitives::utils::parse_units;
-    // use ethers::prelude::*;
+use alloy::transports::http::reqwest::Client;
 
-    #[tokio::test]
-    async fn run_and_query_tx() {
-        let val = parse_units("1", 18).unwrap();
-        let alice = Address::random();
-        let bob = Address::random();
-
-        let mut state = State::default();
-
-        // give alice some money
-        state.db.insert_account_info(
-            alice,
-            AccountInfo {
-                balance: val.into(),
-                ..Default::default()
-            },
-        );
-
-        // make the tx
-        let mut tx = TransactionRequest::default()
-            .from(alice)
-            .to(bob)
-            .input(vec![1, 2, 3, 4, 5].into())
-            .value(val.into());
-        tx.set_gas_price(0);
-        tx.set_gas_limit(21000);
-
-        // Send it over an ABCI message
-
-        let consensus = Consensus::new(state);
-
-        let req = RequestDeliverTx {
-            tx: serde_json::to_vec(&tx).unwrap(),
-        };
-        let res = consensus.deliver_tx(req).await;
-        let res: TransactionResult = serde_json::from_slice(&res.data).unwrap();
-        // tx passed
-
-        match res.out {
-            ExecutionResult::Success { reason, .. } => {
-                assert_eq!(reason, revm::primitives::SuccessReason::Stop);
-            }
-            ExecutionResult::Revert { .. } => {
-                panic!("Transaction reverted");
-            }
-            ExecutionResult::Halt { .. } => {
-                panic!("Transaction halted");
-            }
-        }
-
-        // now we query the state for bob's balance
-        let info = Info {
-            state: consensus.current_state.clone(),
-        };
-        let res = info
-            .query(RequestQuery {
-                data: serde_json::to_vec(&Query::Balance(bob)).unwrap(),
-                ..Default::default()
-            })
-            .await;
-        let res: QueryResponse = serde_json::from_slice(&res.value).unwrap();
-        let balance = res.as_balance();
-        assert_eq!(balance, val.into());
-    }
-}
+static PROVIDER: Lazy<Box<dyn Provider<Http<Client>>>> = Lazy::new(|| {
+    Box::new(
+        ProviderBuilder::new().with_recommended_fillers().on_http(
+            "http://213.136.78.134:8545"
+                .parse()
+                .expect("Invalid provider URL"),
+        ),
+    )
+});

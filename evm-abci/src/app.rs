@@ -1,10 +1,11 @@
 use crate::{Consensus, Info, Mempool, Snapshot, State};
-use foundry_evm::revm::{
-    db::{CacheDB, EmptyDB},
-    primitives::AccountInfo,
-};
+use foundry_evm::revm::db::{CacheDB, EmptyDB};
 use std::sync::Arc;
-use foundry_evm::revm::primitives::alloy_primitives::utils::parse_ether;
+use alloy_primitives::utils::parse_ether;
+use alloy_signer::Signer;
+use alloy_signer_local::coins_bip39::English;
+use alloy_signer_local::MnemonicBuilder;
+use foundry_evm::revm::primitives::AccountInfo;
 use tokio::sync::Mutex;
 
 pub struct App<Db> {
@@ -30,7 +31,6 @@ impl App<CacheDB<EmptyDB>> {
         };
 
         if demo {
-            // addr(pk = 78aaa1de82137f31ac551fd8e876a6930aadd51b28c25e8c3420100f8e51d5c6)
             state.db.insert_account_info(
                 "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
                     .parse()
@@ -45,9 +45,17 @@ impl App<CacheDB<EmptyDB>> {
         let committed_state = Arc::new(Mutex::new(state.clone()));
         let current_state = Arc::new(Mutex::new(state));
 
+        let mut signer = MnemonicBuilder::<English>::default()
+            .phrase("test test test test test test test test test test test junk")
+            .build()
+            .map_err(|e| eyre::eyre!("Failed to build signer: {}", e)).unwrap();
+
+        signer.set_chain_id(Some(1337));
+
         let consensus = Consensus {
             committed_state: committed_state.clone(),
             current_state,
+            signer,
         };
         let mempool = Mempool::default();
         let info = Info {
