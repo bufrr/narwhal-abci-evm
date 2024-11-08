@@ -5,3 +5,7 @@
 benchmark_client
 logs/
 node
+bin/
+share/
+lib/
+pyvenv.cfg
