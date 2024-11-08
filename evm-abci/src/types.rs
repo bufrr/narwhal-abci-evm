@@ -351,7 +351,7 @@ use alloy::transports::http::reqwest::Client;
 static PROVIDER: Lazy<Box<dyn Provider<Http<Client>>>> = Lazy::new(|| {
     Box::new(
         ProviderBuilder::new().with_recommended_fillers().on_http(
-            "http://213.136.78.134:8545"
+            "http://127.0.0.1:8545"
                 .parse()
                 .expect("Invalid provider URL"),
         ),

@@ -18,7 +18,7 @@ def local(ctx, debug=True):
         'workers': 1,
         'rate': 1_000,
         'tx_size': 512,
-        'duration': 5*60,
+        'duration': 5*600,
     }
     node_params = {
         'header_size': 50,  # bytes

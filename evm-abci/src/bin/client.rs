@@ -117,7 +117,7 @@ async fn send_transaction(host: &str, from: Address, to: Address, value: U256, n
 #[tokio::main]
 async fn main() -> Result<()> {
     // the ABCI port on the various narwhal primaries
-    let host = "http://213.136.78.134:3009";
+    let host = "http://127.0.0.1:3009";
 
 
     let value = parse_units("1", "wei")?;
@@ -128,10 +128,11 @@ async fn main() -> Result<()> {
     signer.set_chain_id(Some(1337));
 
     let alice = signer.address();
+    println!("alice: {}", alice);
 
     let provider = ProviderBuilder::new()
         .with_recommended_fillers()
-        .on_http("http://213.136.78.134:8545".parse()?);
+        .on_http("http://127.0.0.1:8545".parse()?);
 
     // Create two users, Alice and Bob.
     //let alice = wallet.address().clone();
@@ -172,7 +173,8 @@ async fn main() -> Result<()> {
             Ok::<_, eyre::Error>(())
         });
 
-        sleep(Duration::from_millis(200)).await;
+        //sleep(Duration::from_millis(1000)).await;
+        break
     }
 
     println!("---");
