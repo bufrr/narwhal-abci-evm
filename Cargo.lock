@@ -2129,7 +2129,6 @@ dependencies = [
 [[package]]
 name = "config"
 version = "0.1.0"
-source = "git+https://github.com/asonnino/narwhal/#f5145b7219f62b4607be65822d4e3c13147ce778"
 dependencies = [
  "crypto",
  "log",
@@ -2141,7 +2140,6 @@ dependencies = [
 [[package]]
 name = "consensus"
 version = "0.1.0"
-source = "git+https://github.com/asonnino/narwhal/#f5145b7219f62b4607be65822d4e3c13147ce778"
 dependencies = [
  "config",
  "crypto",
@@ -2281,7 +2279,6 @@ checksum = "7a81dae078cea95a014a339291cec439d2f232ebe854a9d672b796c6afafa9b7"
 [[package]]
 name = "crypto"
 version = "0.1.0"
-source = "git+https://github.com/asonnino/narwhal/#f5145b7219f62b4607be65822d4e3c13147ce778"
 dependencies = [
  "base64 0.13.1",
  "ed25519-dalek",
@@ -2755,14 +2752,14 @@ dependencies = [
  "eyre",
  "foundry-common",
  "foundry-evm",
+ "futures",
  "hex",
  "once_cell",
  "reqwest 0.11.27",
  "serde",
  "serde_json",
- "tendermint-abci",
- "tendermint-proto",
  "tokio",
+ "tokio-util 0.7.12",
  "tracing",
  "tracing-error",
  "tracing-subscriber",
@@ -4632,12 +4629,18 @@ dependencies = [
 name = "narwhal-abci"
 version = "0.1.0"
 dependencies = [
+ "alloy",
+ "alloy-primitives",
+ "alloy-rpc-client 0.6.2",
+ "alloy-signer 0.6.2",
+ "alloy-signer-local 0.6.2",
  "bincode",
  "crypto",
  "eyre",
  "futures",
  "hex",
  "log",
+ "once_cell",
  "primary",
  "rocksdb",
  "serde",
@@ -4669,7 +4672,6 @@ dependencies = [
 [[package]]
 name = "network"
 version = "0.1.0"
-source = "git+https://github.com/asonnino/narwhal/#f5145b7219f62b4607be65822d4e3c13147ce778"
 dependencies = [
  "async-trait",
  "bytes",
@@ -5280,7 +5282,6 @@ checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 [[package]]
 name = "primary"
 version = "0.1.0"
-source = "git+https://github.com/asonnino/narwhal/#f5145b7219f62b4607be65822d4e3c13147ce778"
 dependencies = [
  "async-recursion",
  "async-trait",
@@ -6643,7 +6644,6 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "store"
 version = "0.1.0"
-source = "git+https://github.com/asonnino/narwhal/#f5145b7219f62b4607be65822d4e3c13147ce778"
 dependencies = [
  "rocksdb",
  "tokio",
@@ -7978,7 +7978,6 @@ dependencies = [
 [[package]]
 name = "worker"
 version = "0.1.0"
-source = "git+https://github.com/asonnino/narwhal/#f5145b7219f62b4607be65822d4e3c13147ce778"
 dependencies = [
  "async-trait",
  "bincode",

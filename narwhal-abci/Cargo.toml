@@ -21,6 +21,13 @@ hex = "0.4.3"
 tendermint-abci = { version = "0.23.7", features = ["client"] }
 tendermint-proto = "0.23.7"
 
-narwhal_primary = { package = "primary", git = "https://github.com/asonnino/narwhal/" }
-narwhal_crypto = { package = "crypto", git = "https://github.com/asonnino/narwhal/" }
+narwhal_primary = { package = "primary", path = "../../narwhal/primary" }
+narwhal_crypto = { package = "crypto", path = "../../narwhal/crypto" }
 serde_json = "1.0.82"
+
+alloy = { version = "0.6.1", features = ["full"] }
+alloy-signer = "0.6.1"
+alloy-rpc-client = "0.6.1"
+alloy-primitives = "0.8.11"
+alloy-signer-local = { version = "0.6.1",features = ["mnemonic"] }
+once_cell = "1.20.2"

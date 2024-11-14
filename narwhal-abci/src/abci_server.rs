@@ -38,7 +38,7 @@ impl AbciApi<ResponseQuery> {
         let route_broadcast_tx = warp::path("broadcast_tx")
             .and(warp::query::<BroadcastTxQuery>())
             .and_then(move |req: BroadcastTxQuery| async move {
-                log::warn!("broadcast_tx: {:?}", req);
+                //log::warn!("broadcast_tx222: {:?}", req);
 
                 let stream = TcpStream::connect(self.mempool_address)
                     .await
