@@ -1,4 +1,3 @@
-use crate::AbciQueryQuery;
 use alloy::network::{EthereumWallet, TransactionBuilder};
 use alloy::providers::{Provider, ProviderBuilder};
 use log::info;
@@ -8,18 +7,9 @@ use tokio::sync::mpsc::Receiver;
 use tokio::sync::oneshot::Sender as OneShotSender;
 use tokio::time::{sleep, Duration};
 
-// Tendermint Types
-use tendermint_abci::{Client as AbciClient, ClientBuilder};
-use tendermint_proto::abci::{
-    RequestBeginBlock, RequestDeliverTx, RequestEndBlock, RequestInfo, RequestInitChain,
-    RequestQuery, ResponseDeliverTx, ResponseQuery,
-};
-use tendermint_proto::types::Header;
-
 // Narwhal types
 use narwhal_crypto::Digest;
 use narwhal_primary::Certificate;
-use warp::filters::log::Info;
 
 use alloy::rpc::types::TransactionRequest;
 use alloy::transports::http::Http;
@@ -34,42 +24,13 @@ use alloy_signer_local::MnemonicBuilder;
 /// 2. Processing Query & Broadcast Tx messages received from the Primary's ABCI Server API and forwarding them to the
 ///    ABCI App via a Tendermint protobuf client.
 pub struct Engine {
-    /// The address of the ABCI app
-    pub app_address: SocketAddr,
-    /// The path to the Primary's store, so that the Engine can query each of the Primary's workers
-    /// for the data corresponding to a Certificate
     pub store_path: String,
-    /// Messages received from the ABCI Server to be forwarded to the engine.
-    pub rx_abci_queries: Receiver<(OneShotSender<ResponseQuery>, AbciQueryQuery)>,
-    /// The last block height, initialized to the application's latest block by default
-    pub last_block_height: i64,
-    pub client: AbciClient,
-    pub req_client: AbciClient,
 }
 
 impl Engine {
-    pub fn new(
-        app_address: SocketAddr,
-        store_path: &str,
-        rx_abci_queries: Receiver<(OneShotSender<ResponseQuery>, AbciQueryQuery)>,
-    ) -> Self {
-        let mut client = ClientBuilder::default().connect(&app_address).unwrap();
-
-        let last_block_height = client
-            .info(RequestInfo::default())
-            .map(|res| res.last_block_height)
-            .unwrap_or_default();
-
-        // Instantiate a new client to not be locked in an Info connection
-        let client = ClientBuilder::default().connect(&app_address).unwrap();
-        let req_client = ClientBuilder::default().connect(&app_address).unwrap();
+    pub fn new(store_path: &str) -> Self {
         Self {
-            app_address,
             store_path: store_path.to_string(),
-            rx_abci_queries,
-            last_block_height,
-            client,
-            req_client,
         }
     }
 
@@ -78,8 +39,11 @@ impl Engine {
         loop {
             tokio::select! {
                 Some(certificate) = rx_output.recv() => {
-                    println!("certificate received");
-                    self.handle_cert(certificate).await?;
+                    info!("rx_output len: {}", rx_output.len());
+                    let store_path = self.store_path.clone();
+                    tokio::spawn(async move {
+                        handle_cert(certificate, store_path).await.expect("handle_cert panic");
+                    });
                 },
                 else => {
                     println!("loop exit!!!");
@@ -93,9 +57,7 @@ impl Engine {
 
     /// On each new certificate, increment the block height to proposed and run through the
     /// BeginBlock -> DeliverTx for each tx in the certificate -> EndBlock -> Commit event loop.
-    async fn handle_cert(&mut self, certificate: Certificate) -> eyre::Result<()> {
-        info!("Processing certificate");
-
+    async fn handle_cert(&self, certificate: Certificate) -> eyre::Result<()> {
         // Reconstruct batches from certificate
         let futures: Vec<_> = certificate
             .header
@@ -116,7 +78,7 @@ impl Engine {
         Ok(())
     }
 
-    async fn process_batch(&mut self, batch: Vec<u8>) -> eyre::Result<()> {
+    async fn process_batch(&self, batch: Vec<u8>) -> eyre::Result<()> {
         // Deserialize and process the batch
         match bincode::deserialize(&batch) {
             Ok(WorkerMessage::Batch(txs)) => {
@@ -167,7 +129,7 @@ impl Engine {
         unreachable!()
     }
 
-    async fn process_transaction(&mut self, tx: Transaction) -> eyre::Result<()> {
+    async fn process_transaction(&self, tx: Transaction) -> eyre::Result<()> {
         match serde_json::from_slice::<TransactionRequest>(&tx) {
             Ok(tx) => {
                 info!("tx request");
@@ -227,3 +189,67 @@ static PROVIDER: Lazy<Box<dyn Provider<Http<Client>>>> = Lazy::new(|| {
         ),
     )
 });
+
+async fn reconstruct_batch(
+    digest: Digest,
+    worker_id: u32,
+    store_path: String,
+) -> eyre::Result<Vec<u8>> {
+    let max_attempts = 3;
+    let backoff_ms = 500;
+    let db_path = format!("{}-{}", store_path, worker_id);
+    // Open the database to each worker
+    let db = rocksdb::DB::open_for_read_only(&rocksdb::Options::default(), db_path, true)?;
+
+    for attempt in 0..max_attempts {
+        // Query the db
+        let key = digest.to_vec();
+        match db.get(&key)? {
+            Some(res) => return Ok(res),
+            None if attempt < max_attempts - 1 => {
+                println!(
+                    "digest {} not found, retrying in {}ms",
+                    digest,
+                    backoff_ms * (attempt + 1)
+                );
+                sleep(Duration::from_millis(backoff_ms * (attempt + 1))).await;
+                continue;
+            }
+            None => eyre::bail!(
+                "digest {} not found after {} attempts",
+                digest,
+                max_attempts
+            ),
+        }
+    }
+    unreachable!()
+}
+
+async fn handle_cert(certificate: Certificate, store_path: String) -> eyre::Result<()> {
+    // Reconstruct batches from certificate
+    let futures: Vec<_> = certificate
+        .header
+        .payload
+        .into_iter()
+        .map(|(digest, worker_id)| reconstruct_batch(digest, worker_id, store_path.clone()))
+        .collect();
+
+    let batches = futures::future::join_all(futures).await;
+
+    for batch in batches {
+        let batch = batch?;
+        process_batch(batch).await?;
+    }
+    Ok(())
+}
+
+async fn process_batch(batch: Vec<u8>) -> eyre::Result<()> {
+    // Deserialize and process the batch
+    match bincode::deserialize(&batch) {
+        Ok(WorkerMessage::Batch(txs)) => {
+            info!("txs len: {}", txs.len());
+            Ok(())
+        }
+        _ => eyre::bail!("Unrecognized message format"),
+    }
+}

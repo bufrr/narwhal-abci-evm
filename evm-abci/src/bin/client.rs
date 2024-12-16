@@ -15,6 +15,7 @@ use alloy_signer::Signer;
 use alloy_signer_local::{coins_bip39::English, MnemonicBuilder};
 use evm_abci::types::{Query, QueryResponse};
 use eyre::Result;
+use futures::SinkExt;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -24,7 +25,6 @@ use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use futures::SinkExt;
 
 use yansi::Paint;
 
@@ -78,53 +78,48 @@ async fn main() -> Result<()> {
         .with_recommended_fillers()
         .on_http("http://127.0.0.1:8545".parse()?);
 
-    // Create two users, Alice and Bob.
-    //let alice = wallet.address().clone();
     let mut nonce = provider.get_transaction_count(alice).await?;
-
-    let semaphore = Arc::new(Semaphore::new(10));
-    let client = reqwest::Client::new();
-    let mut count = 0;
 
     // Connect directly to worker's mempool
     let stream = TcpStream::connect(mempool_address).await?;
     let mut transport = Framed::new(stream, LengthDelimitedCodec::new());
 
+    let tx = TransactionRequest::default()
+        .with_to(address!("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"))
+        .with_nonce(nonce)
+        .with_chain_id(1337)
+        .with_value(value.into())
+        .with_gas_limit(21_000)
+        .with_max_priority_fee_per_gas(1_000_000_000)
+        .with_max_fee_per_gas(20_000_000_000);
+
+    let tx = serde_json::to_string(&tx)?;
+    println!("tx_len: {}", tx.len());
+
+    let mut total_count = 0u64;
+    let mut count = 0u64;
+    let start_time = std::time::Instant::now();
+    let mut last_print = start_time;
+    let print_interval = Duration::from_secs(1);
+
     loop {
-        let permit = semaphore.clone().acquire_owned().await?;
-        let client = client.clone();
-        let current_nonce = nonce;
-        nonce += 1;
+        transport.send(tx.clone().into()).await?;
         count += 1;
-        println!("nonce: {}", nonce);
+        total_count += 1;
 
-        let tx = TransactionRequest::default()
-            .with_to(address!("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"))
-            .with_nonce(current_nonce)
-            .with_chain_id(1337)
-            .with_value(value.into())
-            .with_gas_limit(21_000)
-            .with_max_priority_fee_per_gas(1_000_000_000)
-            .with_max_fee_per_gas(20_000_000_000);
-
-        let tx = serde_json::to_string(&tx)?;
-
-
-        // Send transaction directly to mempool
-        transport.send(tx.into()).await?;
-
-        drop(permit);
-
-        sleep(Duration::from_millis(100)).await;
+        if count >= 1000 {
+            let elapsed = last_print.elapsed();
+            if elapsed >= print_interval {
+                let overall_tps = total_count as f64 / start_time.elapsed().as_secs_f64();
+                let current_tps = count as f64 / elapsed.as_secs_f64();
+                println!(
+                    "Current: {} tx/s, Average: {} tx/s",
+                    Paint::green(&format!("{:.2}", current_tps)),
+                    Paint::blue(&format!("{:.2}", overall_tps))
+                );
+                count = 0;
+                last_print = std::time::Instant::now();
+            }
+        }
     }
-
-    println!("---");
-
-    sleep(Duration::from_secs(5)).await;
-
-    //send_transaction(host, alice, *BOB, value.into(), nonce).await?;
-
-    println!("---");
-
-    Ok(())
 }

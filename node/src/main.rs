@@ -136,10 +136,6 @@ async fn run(matches: &ArgMatches<'_>) -> Result<()> {
             process(
                 rx_output,
                 store_path,
-                keypair_name,
-                committee,
-                abci_api,
-                app_api,
             )
             .await?;
         }
@@ -174,35 +170,8 @@ async fn run(matches: &ArgMatches<'_>) -> Result<()> {
 async fn process(
     rx_output: Receiver<primary::Certificate>,
     store_path: &str,
-    keypair_name: PublicKey,
-    committee: Committee,
-    abci_api: String,
-    app_api: String,
 ) -> eyre::Result<()> {
-    // address of mempool
-    let mempool_address = committee
-        .worker(&keypair_name.clone(), &0)
-        .expect("Our public key or worker id is not in the committee")
-        .transactions;
-
-    // ABCI queries will be sent using this from the RPC to the ABCI client
-    let (tx_abci_queries, rx_abci_queries) = channel(CHANNEL_CAPACITY);
-
-    tokio::spawn(async move {
-        let api = AbciApi::new(mempool_address, tx_abci_queries);
-        // let tx_abci_queries = tx_abci_queries.clone();
-        // Spawn the ABCI RPC endpoint
-        let mut address = abci_api.parse::<SocketAddr>().unwrap();
-        address.set_ip("0.0.0.0".parse().unwrap());
-        warp::serve(api.routes()).run(address).await
-    });
-
-    // Analyze the consensus' output.
-    // Spawn the network receiver listening to messages from the other primaries.
-    let mut app_address = app_api.parse::<SocketAddr>().unwrap();
-    app_address.set_ip("0.0.0.0".parse().unwrap());
-    let mut engine = Engine::new(app_address, store_path, rx_abci_queries);
+    let mut engine = Engine::new(store_path);
     engine.run(rx_output).await?;
-
     Ok(())
 }
